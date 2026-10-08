@@ -1,0 +1,22 @@
+// OAuth consent granted to an application for high-privilege delegated scopes
+// ATT&CK: T1528 Steal Application Access Token, T1550.001 Application Access Token
+// Data: Microsoft Sentinel (AuditLogs)
+// Why: consent phishing and over-privileged apps give persistent mailbox or file access that survives a
+//      password reset. This is the class behind the legacy OAuth app in Midnight Blizzard.
+let lookback = 7d;
+let riskyScopes = dynamic(["Mail.Read", "Mail.ReadWrite", "Mail.Send", "MailboxSettings.ReadWrite", "Files.Read.All",
+    "Files.ReadWrite.All", "Sites.ReadWrite.All", "Directory.ReadWrite.All", "User.ReadWrite.All",
+    "Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "RoleManagement.ReadWrite.Directory",
+    "full_access_as_app", "EWS.AccessAsUser.All"]);
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName == "Consent to application"
+| extend App = tostring(TargetResources[0].displayName), AppObjectId = tostring(TargetResources[0].id)
+| extend Actor = tostring(InitiatedBy.user.userPrincipalName), ActorIP = tostring(InitiatedBy.user.ipAddress)
+| mv-apply Prop = TargetResources[0].modifiedProperties on (
+    summarize Props = make_bag(bag_pack(tostring(Prop.displayName), tostring(Prop.newValue))))
+| extend Permissions = tostring(Props["ConsentAction.Permissions"]), AdminConsent = tostring(Props["ConsentContext.IsAdminConsent"])
+| extend MatchedScopes = set_intersect(extract_all(@"([A-Za-z_]+\.[A-Za-z_.]+)", Permissions), riskyScopes)
+| where array_length(MatchedScopes) > 0
+| project TimeGenerated, Actor, ActorIP, App, AppObjectId, AdminConsent, MatchedScopes, Permissions
+| order by TimeGenerated desc

@@ -1,0 +1,21 @@
+// Device code flow sign-ins, interactive and token refresh
+// ATT&CK: T1528 Steal Application Access Token, T1566.002 Spearphishing Link
+// Data: Microsoft Sentinel (SigninLogs, AADNonInteractiveUserSignInLogs)
+// Why: in device code phishing (Storm-2372 style), the attacker redeems a code the user types in. Later
+//      token refreshes keep the device code origin, so the non-interactive table has to be checked as well.
+let lookback = 14d;
+let approvedApps = dynamic([]);   // apps with an approved device code use case (conference room devices, CLI tools)
+union isfuzzy=true
+    (SigninLogs | where TimeGenerated > ago(lookback)
+        | extend SignInType = "Interactive", Country = tostring(LocationDetails.countryOrRegion)),
+    // LocationDetails is a string in the non-interactive table, so parse it before the union
+    (AADNonInteractiveUserSignInLogs | where TimeGenerated > ago(lookback)
+        | extend SignInType = "NonInteractive", Country = tostring(parse_json(LocationDetails).countryOrRegion))
+| extend TransferMethod = tostring(column_ifexists("OriginalTransferMethod", ""))
+| where AuthenticationProtocol =~ "deviceCode" or TransferMethod =~ "deviceCodeFlow"
+| where not(AppDisplayName in (approvedApps))
+| summarize FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated), SignIns = count(),
+            Results = make_set(ResultType, 10), IPs = make_set(IPAddress, 20), Countries = make_set(Country, 10),
+            Apps = make_set(AppDisplayName, 10), SignInTypes = make_set(SignInType)
+    by UserPrincipalName
+| order by SignIns desc

@@ -1,0 +1,30 @@
+// Authentication method added or changed within 24 hours of a risky sign-in for the same user
+// ATT&CK: T1098.005 Device Registration, T1556.006 Multi-Factor Authentication
+// Data: Microsoft Sentinel (AuditLogs, SigninLogs)
+// Why: an attacker holding a password registers their own MFA or SSPR method to persist. A method change
+//      next to a risky sign-in is the signal; on its own, a method change is routine.
+let lookback = 7d;
+let window = 24h;
+let methodChanges =
+    AuditLogs
+    | where TimeGenerated > ago(lookback)
+    | where LoggedByService == "Authentication Methods"
+    | where OperationName in ("User registered security info", "User changed default security info",
+        "User registered all required security info", "Admin registered security info",
+        "Admin updated security info", "User deleted security info")
+    | extend UserPrincipalName = tolower(tostring(TargetResources[0].userPrincipalName)),
+             ChangeIP = tostring(InitiatedBy.user.ipAddress), Detail = ResultReason
+    | project ChangeTime = TimeGenerated, UserPrincipalName, OperationName, Detail, ChangeIP, Result;
+let riskySignins =
+    SigninLogs
+    | where TimeGenerated > ago(lookback + window)
+    | where RiskLevelDuringSignIn in ("medium", "high") or RiskState == "atRisk"
+    | extend UserPrincipalName = tolower(UserPrincipalName), Country = tostring(LocationDetails.countryOrRegion)
+    | project SigninTime = TimeGenerated, UserPrincipalName, IPAddress, Country, AppDisplayName, RiskLevelDuringSignIn, RiskEventTypes_V2;
+methodChanges
+| join kind=inner riskySignins on UserPrincipalName
+| where SigninTime between ((ChangeTime - window) .. (ChangeTime + window))
+| summarize RiskySignins = count(), SigninIPs = make_set(IPAddress, 10), Countries = make_set(Country, 10),
+            RiskTypes = make_set(RiskEventTypes_V2, 10), SameIP = countif(IPAddress == ChangeIP)
+    by ChangeTime, UserPrincipalName, OperationName, Detail, ChangeIP
+| order by ChangeTime desc

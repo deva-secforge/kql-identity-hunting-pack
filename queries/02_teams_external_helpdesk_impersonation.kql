@@ -1,0 +1,31 @@
+// Teams 1:1 chats from a first-seen external tenant posing as IT or help desk (Storm-1811 style)
+// ATT&CK: T1566.003 Spearphishing via Service, T1656 Impersonation
+// Data: Microsoft Defender XDR advanced hunting (CloudAppEvents)
+// Why: the lure is an external Microsoft 365 tenant, often a fresh onmicrosoft.com name, that opens a
+//      1:1 chat as "Help Desk" or "Maintenance" and pushes screen sharing or a remote tool.
+let lookback = 7d;
+let baseline = 30d;
+let lureTerms = dynamic(["help desk", "helpdesk", "it support", "service desk", "support team", "maintenance", "security", "microsoft", "admin"]);
+let knownTenants =
+    CloudAppEvents
+    | where Timestamp between (ago(baseline + lookback) .. ago(lookback))
+    | where Application == "Microsoft Teams" and ActionType == "ChatCreated"
+    | mv-expand TenantId = RawEventData.ParticipantInfo.ParticipantTenantIds
+    | summarize by ExternalTenant = tostring(TenantId);
+CloudAppEvents
+| where Timestamp > ago(lookback)
+| where Application == "Microsoft Teams" and ActionType == "ChatCreated"
+| where tobool(RawEventData.ParticipantInfo.HasForeignTenantUsers)
+| where tostring(RawEventData.CommunicationType) == "OneOnOne"
+| extend HomeTenant = tostring(RawEventData.OrganizationId), ChatThreadId = tostring(RawEventData.ChatThreadId)
+| mv-expand Member = RawEventData.Members
+| extend MemberName = tostring(Member.DisplayName), MemberUpn = tostring(Member.UPN)
+| mv-expand TenantId = RawEventData.ParticipantInfo.ParticipantTenantIds
+| extend ExternalTenant = tostring(TenantId)
+| where ExternalTenant != HomeTenant
+| where not(ExternalTenant in (knownTenants))
+| summarize FirstSeen = min(Timestamp), Chats = dcount(ChatThreadId), Targets = make_set(AccountDisplayName, 20),
+            ExternalNames = make_set(MemberName, 10), ExternalUpns = make_set(MemberUpn, 10), IPs = make_set(IPAddress, 10)
+    by ExternalTenant
+| extend LureName = ExternalNames has_any (lureTerms), OnMicrosoftDomain = tostring(ExternalUpns) has "onmicrosoft.com"
+| order by LureName desc, Chats desc

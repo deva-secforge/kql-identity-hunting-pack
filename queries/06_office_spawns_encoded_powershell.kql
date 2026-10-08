@@ -1,0 +1,16 @@
+// Office or script host launching PowerShell or cmd with encoded, bypass or download-cradle arguments
+// ATT&CK: T1204.002 Malicious File, T1059.001 PowerShell, T1027 Obfuscated Files or Information
+// Data: Microsoft Defender XDR advanced hunting (DeviceProcessEvents)
+// Why: macro-to-PowerShell is still the common initial execution path. Known false positive: Office
+//      document preview and PDF rendering helpers that pass -ExecutionPolicy Bypass. Check the child's purpose.
+let lookback = 7d;
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where InitiatingProcessFileName in~ ("excel.exe", "winword.exe", "powerpnt.exe", "outlook.exe", "mshta.exe", "wscript.exe", "cscript.exe")
+| where FileName in~ ("powershell.exe", "pwsh.exe", "cmd.exe")
+| where ProcessCommandLine matches regex @"(?i)\s-e(nc|ncodedcommand)?\s"
+     or ProcessCommandLine has_any ("FromBase64String", "DownloadString", "DownloadFile", "IEX", "Invoke-Expression")
+     or ProcessCommandLine contains "bypass"
+| project Timestamp, DeviceName, AccountName, InitiatingProcessFileName, InitiatingProcessCommandLine,
+          FileName, ProcessCommandLine, SHA256
+| order by Timestamp desc

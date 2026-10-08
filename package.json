@@ -1,0 +1,8 @@
+{
+  "name": "kql-identity-hunting-pack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KQL hunting queries for identity and endpoint attacks, built from real investigations",
+  "scripts": { "validate": "node tools/validate.js queries/*.kql" },
+  "devDependencies": { "@kusto/language-service-next": "^12.4.1" }
+}

@@ -1,0 +1,17 @@
+// Root deleting security-agent or system logs, or clearing shell history, on Linux
+// ATT&CK: T1070.002 Clear Linux or Mac System Logs, T1070.003 Clear Command History, T1562.001 Impair Defenses
+// Data: Microsoft Defender XDR advanced hunting (DeviceProcessEvents, Defender for Endpoint on Linux)
+// Why: deleting EDR logs plus editing shell history is anti-forensic in shape. Treat it as an open
+//      incident until the operator and the reason are established, never as a benign cleanup.
+let lookback = 7d;
+let logPaths = dynamic(["/var/log", "/opt/sentinelone", "/opt/microsoft/mdatp", "/var/opt/microsoft", "/var/log/audit"]);
+let historyTampering = dynamic(["history -c", "unset HISTFILE", "HISTSIZE=0", "HISTFILESIZE=0", ".bash_history", "/dev/null > ~/.bash_history"]);
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where AccountName == "root" or InitiatingProcessAccountName == "root"
+| where (FileName in ("rm", "shred", "truncate", "unlink") and ProcessCommandLine has_any (logPaths))
+     or ProcessCommandLine has_any (historyTampering)
+| summarize FirstSeen = min(Timestamp), LastSeen = max(Timestamp), Commands = make_set(ProcessCommandLine, 25),
+            Parents = make_set(InitiatingProcessCommandLine, 10)
+    by DeviceName, AccountName
+| order by FirstSeen desc
